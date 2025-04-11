@@ -4,236 +4,73 @@ from scipy.fft import rfft, rfftfreq
 import time
 from datetime import datetime
 import os
-import sys
 from collections import deque
 
 # Constants
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 2048
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-MIN_AMPLITUDE = 0.01
+MIN_AMPLITUDE = 0.01  # Base noise floor
+VOLUME_THRESHOLD = 0.1  # New: Minimum loudness to detect (0.0-1.0)
 LOG_DIR = "music_logs"
 BPM = 120
-BEAT_VALUE = 60.0 / BPM  # Calculate immediately
-
-# Rhythm mapping
-RHYTHM_MAP = {
-    0.125: ('𝅘𝅘𝅥𝅯', '32nd'),
-    0.25: ('𝅘𝅘𝅥𝅰', '16th'),
-    0.375: ('𝅘𝅘𝅥𝅱', '16th.'),
-    0.5: ('𝅘𝅮', 'eighth'),
-    0.75: ('𝅘𝅯', 'eighth.'),
-    1.0: ('𝅘𝅥', 'quarter'),
-    1.5: ('𝅘𝅦', 'quarter.'),
-    2.0: ('𝅘𝅧', 'half'),
-    3.0: ('𝅘𝅨', 'half.'),
-    4.0: ('𝅘𝅩', 'whole')
-}
-
-REST_SYMBOLS = {
-    '32nd': '𝄽',
-    '16th': '𝄼',
-    'eighth': '𝄻',
-    'quarter': '𝄺',
-    'half': '𝄷',
-    'whole': '𝄴'
-}
-
-# Display settings
-VISUAL_WIDTH = 60
-NOTE_HISTORY = 8
+BEAT_VALUE = 60.0 / BPM
 
 # Global variables
 current_note = None
 note_start_time = None
 log_file = None
-last_rhythm = None
-note_history = deque(maxlen=NOTE_HISTORY)
+note_history = deque(maxlen=8)
 current_measure = []
 
 def init_log_file():
-    """Initialize the log file with error handling"""
     global log_file
-    try:
-        if not os.path.exists(LOG_DIR):
-            os.makedirs(LOG_DIR)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = open(f"{LOG_DIR}/composition_{timestamp}.txt", "w")
-        log_file.write(f"# Music Notation Log (BPM={BPM})\n")
-        log_file.write("# Format: [note type] [note name]\n")
-        log_file.write("# Example: 'quarter C' or 'eighth.rest'\n\n")
-    except IOError as e:
-        print(f"Error creating log file: {e}")
-        sys.exit(1)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = open(f"{LOG_DIR}/composition_{timestamp}.txt", "w")
+    log_file.write(f"# Music Log (Volume Threshold: {VOLUME_THRESHOLD})\n")
 
-def quantize_duration(duration):
-    """Quantize duration to nearest musical value with safety checks"""
-    if duration <= 0:
-        return 0.125  # Default to 32nd note if duration is invalid
-    
-    beats = duration / BEAT_VALUE
-    simple_rhythms = sorted(RHYTHM_MAP.keys())
-    closest = min(simple_rhythms, key=lambda x: abs(x - beats))
-    return closest
-
-def duration_to_rhythm(duration):
-    """Convert duration to rhythm symbol with fallback"""
-    try:
-        beats = quantize_duration(duration)
-        return RHYTHM_MAP.get(beats, (f"{beats:.3f}", f"{beats}beats"))
-    except Exception:
-        return ("𝅘", "unknown")
-
-def clear_screen():
-    """Clear terminal screen with fallback"""
-    try:
-        print("\033[H\033[J", end="")
-    except:
-        print("\n" * 50)  # Fallback for terminals that don't support ANSI
-
-def display_visual_rhythm():
-    """Display the rhythm visualization with error handling"""
-    try:
-        clear_screen()
-        print(f"=== Live Music Display (BPM: {BPM}) ===")
-        print("Play notes to see them appear below:\n")
-        
-        for item in note_history:
-            symbol, name, note = item
-            if note == "rest":
-                print(f"{REST_SYMBOLS.get(name, '𝄽')} {name}.rest".ljust(20))
-            else:
-                print(f"{symbol} {name} {note}".ljust(20))
-        
-        if current_measure:
-            print("\nCurrent Measure:")
-            measure_display = []
-            for symbol, name, note in current_measure:
-                if note == "rest":
-                    measure_display.append(REST_SYMBOLS.get(name, '𝄽'))
-                else:
-                    measure_display.append(f"{symbol} {note}")
-            print(" ".join(measure_display).center(VISUAL_WIDTH))
-        
-        print("\nPress Ctrl+C to stop...")
-    except Exception as e:
-        print(f"Display error: {e}")
+def get_current_volume(indata):
+    """Calculate RMS volume of current audio chunk"""
+    return np.sqrt(np.mean(indata**2))
 
 def freq_to_note(freq):
-    """Convert frequency to note name without octave, with validation"""
-    if freq < 20 or not isinstance(freq, (int, float)):
+    if freq < 20:
         return None
-    
-    try:
-        note_num = 12 * (np.log2(max(1, freq) / 440.0)) + 69  # Avoid log(0)
-        note_num_rounded = int(round(note_num))
-        note_index = note_num_rounded % 12
-        return NOTE_NAMES[note_index]
-    except (ValueError, IndexError):
-        return None
+    note_num = 12 * (np.log2(freq / 440.0)) + 69
+    return NOTE_NAMES[int(round(note_num)) % 12]
 
 def audio_callback(indata, frames, time_info, status):
-    """Audio processing callback with error handling"""
-    global current_note, note_start_time, last_rhythm
-    
-    try:
-        if status:
-            print(f"Audio status: {status}")
-        
-        # Process audio data
-        if indata is None or len(indata) == 0:
-            return
-            
-        fft_data = np.abs(rfft(indata[:, 0]))
-        freqs = rfftfreq(len(indata[:, 0]), 1.0/SAMPLE_RATE)
-        
-        if len(fft_data) == 0 or len(freqs) == 0:
-            return
-            
-        peak_index = np.argmax(fft_data)
-        peak_freq = freqs[peak_index] if peak_index < len(freqs) else 0
-        
-        current_time = time.time()
-        
-        # Detect silence
-        if fft_data[peak_index] < MIN_AMPLITUDE:
-            handle_silence(current_time)
-            return
-        
-        # Detect note
-        note = freq_to_note(peak_freq)
-        if note:
-            handle_note_change(note, current_time)
-            
-    except Exception as e:
-        print(f"Audio processing error: {e}")
-
-def handle_silence(current_time):
-    """Handle silence/rest periods"""
-    global current_note, note_start_time, last_rhythm
-    
-    if current_note:
-        duration = current_time - note_start_time
-        symbol, rhythm = duration_to_rhythm(duration)
-        log_note(symbol, rhythm, current_note)
-        current_note = None
-        note_start_time = current_time
-    elif note_start_time and (current_time - note_start_time) > BEAT_VALUE/2:
-        rest_duration = current_time - note_start_time
-        symbol, rhythm = duration_to_rhythm(rest_duration)
-        if rhythm != last_rhythm:
-            log_rest(symbol, rhythm)
-        note_start_time = current_time
-
-def handle_note_change(new_note, current_time):
-    """Handle note transitions"""
     global current_note, note_start_time
     
-    if new_note != current_note:
+    current_volume = get_current_volume(indata)
+    
+    # Only process if volume exceeds threshold
+    if current_volume < VOLUME_THRESHOLD:
         if current_note:
-            duration = current_time - note_start_time
-            symbol, rhythm = duration_to_rhythm(duration)
-            log_note(symbol, rhythm, current_note)
-        elif note_start_time and (current_time - note_start_time) > BEAT_VALUE/2:
-            rest_duration = current_time - note_start_time
-            symbol, rhythm = duration_to_rhythm(rest_duration)
-            log_rest(symbol, rhythm)
-        
-        current_note = new_note
-        note_start_time = current_time
+            duration = time.time() - note_start_time
+            log_file.write(f"{duration:.2f}s {current_note}\n")
+            current_note = None
+        return
 
-def log_note(symbol, rhythm, note):
-    """Log a detected note"""
-    try:
-        log_file.write(f"{rhythm} {note}\n")
-        note_history.append((symbol, rhythm, note))
-        current_measure.append((symbol, rhythm, note))
-        last_rhythm = rhythm
-        display_visual_rhythm()
-    except Exception as e:
-        print(f"Error logging note: {e}")
-
-def log_rest(symbol, rhythm):
-    """Log a rest period"""
-    try:
-        log_file.write(f"{rhythm}.rest\n")
-        note_history.append((symbol, rhythm, "rest"))
-        current_measure.append((symbol, rhythm, "rest"))
-        last_rhythm = rhythm
-        display_visual_rhythm()
-    except Exception as e:
-        print(f"Error logging rest: {e}")
+    fft_data = np.abs(rfft(indata[:, 0]))
+    freqs = rfftfreq(len(indata[:, 0]), 1.0/SAMPLE_RATE)
+    peak_index = np.argmax(fft_data)
+    peak_freq = freqs[peak_index]
+    
+    note = freq_to_note(peak_freq)
+    if note and note != current_note:
+        if current_note:
+            duration = time.time() - note_start_time
+            log_file.write(f"{duration:.2f}s {current_note}\n")
+        current_note = note
+        note_start_time = time.time()
 
 def main():
-    """Main application entry point"""
-    global log_file
-    
-    print("Initializing Music Notation Logger...")
+    init_log_file()
+    print(f"Starting detection (Volume Threshold: {VOLUME_THRESHOLD})...")
     
     try:
-        init_log_file()
-        display_visual_rhythm()
-        
         with sd.InputStream(
             callback=audio_callback,
             channels=1,
@@ -243,32 +80,11 @@ def main():
         ):
             while True:
                 time.sleep(0.1)
-                
     except KeyboardInterrupt:
         print("\nStopping...")
-    except sd.PortAudioError as e:
-        print(f"Audio device error: {e}")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
     finally:
-        if current_note:
-            duration = time.time() - (note_start_time or time.time())
-            symbol, rhythm = duration_to_rhythm(duration)
-            log_note(symbol, rhythm, current_note)
-            
         if log_file:
-            try:
-                log_file.close()
-                print(f"Composition saved to {log_file.name}")
-                print("\nFinal Notation:")
-                for item in note_history:
-                    symbol, name, note = item
-                    if note == "rest":
-                        print(f"{REST_SYMBOLS.get(name, '𝄽')} {name}.rest")
-                    else:
-                        print(f"{symbol} {name} {note}")
-            except Exception as e:
-                print(f"Error closing log file: {e}")
+            log_file.close()
 
 if __name__ == "__main__":
     main()
