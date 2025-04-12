@@ -11,10 +11,14 @@ SAMPLE_RATE = 44100
 CHUNK_SIZE = 2048
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 VOLUME_THRESHOLD = 0.05
-MIN_FREQ = 100
-MAX_FREQ = 1500
+MIN_FREQ = 100  # Bb2 (below sax range for overtones)
+MAX_FREQ = 1500 # F6 (above sax range)
 
-# Rhythm mapping (duration in seconds to note type)
+# Note stabilization
+NOTE_CHANGE_THRESHOLD = 3  # Minimum semitone difference to change notes
+STABLE_FRAMES_REQUIRED = 3  # How many consistent frames before changing
+
+# Rhythm detection
 RHYTHM_MAP = {
     0.15: '32nd',
     0.3: '16th',
@@ -32,26 +36,32 @@ RHYTHM_MAP = {
 current_note = None
 note_start_time = None
 log_file = None
+stable_frames = 0
+last_detected_note = None
 
 def init_log_file():
     global log_file
-    os.makedirs("sax_rhythms", exist_ok=True)
+    os.makedirs("sax_notes", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = open(f"sax_rhythms/rhythms_{timestamp}.txt", "w")
+    log_file = open(f"sax_notes/notes_{timestamp}.txt", "w")
 
 def get_rhythm(duration):
-    """Convert duration to nearest rhythm type"""
     closest = min(RHYTHM_MAP.keys(), key=lambda x: abs(x - duration))
     return RHYTHM_MAP[closest]
 
-def get_note(freq):
-    if freq < MIN_FREQ or freq > MAX_FREQ:
-        return None
-    note_num = 12 * (np.log2(max(1, freq) / 440.0) + 69
-    return NOTE_NAMES[int(round(note_num)) % 12]
+def freq_to_note_num(freq):
+    """Convert frequency to semitone position (0=C, 1=C#, etc.)"""
+    return int(round(12 * np.log2(max(1, freq) / 440.0) + 69) % 12
+
+def is_significant_change(new_note_num):
+    """Check if pitch change is large enough"""
+    if current_note is None:
+        return True
+    current_num = NOTE_NAMES.index(current_note)
+    return abs(new_note_num - current_num) >= NOTE_CHANGE_THRESHOLD
 
 def audio_callback(indata, frames, time_info, status):
-    global current_note, note_start_time
+    global current_note, note_start_time, stable_frames, last_detected_note
     
     volume = np.sqrt(np.mean(indata**2))
     if volume < VOLUME_THRESHOLD:
@@ -59,33 +69,50 @@ def audio_callback(indata, frames, time_info, status):
             duration = time.time() - note_start_time
             rhythm = get_rhythm(duration)
             log_file.write(f"{rhythm} {current_note}\n")
-            print(f"{rhythm} {current_note}")  # Optional console output
+            print(f"{rhythm} {current_note}")
             current_note = None
+        stable_frames = 0
         return
     
+    # Process audio
     fft_data = np.abs(rfft(indata[:, 0]))
     freqs = rfftfreq(len(indata[:, 0]), 1.0/SAMPLE_RATE)
     
-    valid_indices = np.where((freqs >= MIN_FREQ) & (freqs <= MAX_FREQ))[0]
-    if len(valid_indices) == 0:
+    # Focus on saxophone frequency range
+    valid_mask = (freqs >= MIN_FREQ) & (freqs <= MAX_FREQ)
+    if not np.any(valid_mask):
         return
     
-    peak_index = valid_indices[np.argmax(fft_data[valid_indices])]
-    peak_freq = freqs[peak_index]
-    new_note = get_note(peak_freq)
+    peak_freq = freqs[valid_mask][np.argmax(fft_data[valid_mask])]
+    new_note_num = freq_to_note_num(peak_freq)
+    new_note = NOTE_NAMES[new_note_num]
     
-    if new_note and new_note != current_note:
+    # Note stabilization logic
+    if new_note == last_detected_note:
+        stable_frames += 1
+    else:
+        stable_frames = 0
+        last_detected_note = new_note
+    
+    # Only change note if stable and significant difference
+    if (stable_frames >= STABLE_FRAMES_REQUIRED and 
+        is_significant_change(new_note_num)):
+        
         if current_note:
             duration = time.time() - note_start_time
             rhythm = get_rhythm(duration)
             log_file.write(f"{rhythm} {current_note}\n")
             print(f"{rhythm} {current_note}")
+        
         current_note = new_note
         note_start_time = time.time()
+        stable_frames = 0
 
 def main():
     init_log_file()
-    print("Saxophone Rhythm Logger - Playing notes will be saved to file\n")
+    print(f"Saxophone Note Detector\n"
+          f"Note change threshold: {NOTE_CHANGE_THRESHOLD} semitones\n"
+          f"Stability frames: {STABLE_FRAMES_REQUIRED}\n")
     
     try:
         with sd.InputStream(
