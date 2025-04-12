@@ -10,65 +10,82 @@ from collections import deque
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 2048
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-MIN_AMPLITUDE = 0.01  # Base noise floor
-VOLUME_THRESHOLD = 0.1  # New: Minimum loudness to detect (0.0-1.0)
-LOG_DIR = "music_logs"
-BPM = 120
-BEAT_VALUE = 60.0 / BPM
+VOLUME_THRESHOLD = 0.05
+MIN_FREQ = 100
+MAX_FREQ = 1500
+
+# Rhythm mapping (duration in seconds to note type)
+RHYTHM_MAP = {
+    0.15: '32nd',
+    0.3: '16th',
+    0.45: '16th.',
+    0.6: 'eighth',
+    0.9: 'eighth.',
+    1.2: 'quarter',
+    1.8: 'quarter.',
+    2.4: 'half',
+    3.6: 'half.',
+    4.8: 'whole'
+}
 
 # Global variables
 current_note = None
 note_start_time = None
 log_file = None
-note_history = deque(maxlen=8)
-current_measure = []
 
 def init_log_file():
     global log_file
-    os.makedirs(LOG_DIR, exist_ok=True)
+    os.makedirs("sax_rhythms", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = open(f"{LOG_DIR}/composition_{timestamp}.txt", "w")
-    log_file.write(f"# Music Log (Volume Threshold: {VOLUME_THRESHOLD})\n")
+    log_file = open(f"sax_rhythms/rhythms_{timestamp}.txt", "w")
 
-def get_current_volume(indata):
-    """Calculate RMS volume of current audio chunk"""
-    return np.sqrt(np.mean(indata**2))
+def get_rhythm(duration):
+    """Convert duration to nearest rhythm type"""
+    closest = min(RHYTHM_MAP.keys(), key=lambda x: abs(x - duration))
+    return RHYTHM_MAP[closest]
 
-def freq_to_note(freq):
-    if freq < 20:
+def get_note(freq):
+    if freq < MIN_FREQ or freq > MAX_FREQ:
         return None
-    note_num = 12 * (np.log2(freq / 440.0)) + 69
+    note_num = 12 * (np.log2(max(1, freq) / 440.0) + 69
     return NOTE_NAMES[int(round(note_num)) % 12]
 
 def audio_callback(indata, frames, time_info, status):
     global current_note, note_start_time
     
-    current_volume = get_current_volume(indata)
-    
-    # Only process if volume exceeds threshold
-    if current_volume < VOLUME_THRESHOLD:
+    volume = np.sqrt(np.mean(indata**2))
+    if volume < VOLUME_THRESHOLD:
         if current_note:
             duration = time.time() - note_start_time
-            log_file.write(f"{duration:.2f}s {current_note}\n")
+            rhythm = get_rhythm(duration)
+            log_file.write(f"{rhythm} {current_note}\n")
+            print(f"{rhythm} {current_note}")  # Optional console output
             current_note = None
         return
-
+    
     fft_data = np.abs(rfft(indata[:, 0]))
     freqs = rfftfreq(len(indata[:, 0]), 1.0/SAMPLE_RATE)
-    peak_index = np.argmax(fft_data)
-    peak_freq = freqs[peak_index]
     
-    note = freq_to_note(peak_freq)
-    if note and note != current_note:
+    valid_indices = np.where((freqs >= MIN_FREQ) & (freqs <= MAX_FREQ))[0]
+    if len(valid_indices) == 0:
+        return
+    
+    peak_index = valid_indices[np.argmax(fft_data[valid_indices])]
+    peak_freq = freqs[peak_index]
+    new_note = get_note(peak_freq)
+    
+    if new_note and new_note != current_note:
         if current_note:
             duration = time.time() - note_start_time
-            log_file.write(f"{duration:.2f}s {current_note}\n")
-        current_note = note
+            rhythm = get_rhythm(duration)
+            log_file.write(f"{rhythm} {current_note}\n")
+            print(f"{rhythm} {current_note}")
+        current_note = new_note
         note_start_time = time.time()
 
 def main():
     init_log_file()
-    print(f"Starting detection (Volume Threshold: {VOLUME_THRESHOLD})...")
+    print("Saxophone Rhythm Logger - Playing notes will be saved to file\n")
     
     try:
         with sd.InputStream(
