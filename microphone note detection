@@ -18,18 +18,21 @@ MAX_FREQ = 1500 # F6 (above sax range)
 NOTE_CHANGE_THRESHOLD = 3  # Minimum semitone difference to change notes
 STABLE_FRAMES_REQUIRED = 3  # How many consistent frames before changing
 
-# Rhythm detection
+BPM = 120  # ← Add this line to control overall tempo
+BEAT_VALUE = 60.0 / BPM  # Duration of one beat in seconds
+
+# Then modify the RHYTHM_MAP to use BEAT_VALUE:
 RHYTHM_MAP = {
-    0.15: '32nd',
-    0.3: '16th',
-    0.45: '16th.',
-    0.6: 'eighth',
-    0.9: 'eighth.',
-    1.2: 'quarter',
-    1.8: 'quarter.',
-    2.4: 'half',
-    3.6: 'half.',
-    4.8: 'whole'
+    0.125 * BEAT_VALUE * 4: '32nd',
+    0.25 * BEAT_VALUE * 4: '16th',
+    0.375 * BEAT_VALUE * 4: '16th.',
+    0.5 * BEAT_VALUE * 4: 'eighth',
+    0.75 * BEAT_VALUE * 4: 'eighth.',
+    1.0 * BEAT_VALUE * 4: 'quarter',
+    1.5 * BEAT_VALUE * 4: 'quarter.',
+    2.0 * BEAT_VALUE * 4: 'half',
+    3.0 * BEAT_VALUE * 4: 'half.',
+    4.0 * BEAT_VALUE * 4: 'whole'
 }
 
 # Global variables
