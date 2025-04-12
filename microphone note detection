@@ -11,17 +11,12 @@ SAMPLE_RATE = 44100
 CHUNK_SIZE = 2048
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 VOLUME_THRESHOLD = 0.05
-MIN_FREQ = 100  # Bb2 (below sax range for overtones)
-MAX_FREQ = 1500 # F6 (above sax range)
-
-# Note stabilization
-NOTE_CHANGE_THRESHOLD = 3  # Minimum semitone difference to change notes
-STABLE_FRAMES_REQUIRED = 3  # How many consistent frames before changing
-
-BPM = 120  # ← Add this line to control overall tempo
+MIN_FREQ = 100
+MAX_FREQ = 1500
+BPM = 120
 BEAT_VALUE = 60.0 / BPM  # Duration of one beat in seconds
 
-# Then modify the RHYTHM_MAP to use BEAT_VALUE:
+# Rhythm mapping (now includes rest detection)
 RHYTHM_MAP = {
     0.125 * BEAT_VALUE * 4: '32nd',
     0.25 * BEAT_VALUE * 4: '16th',
@@ -32,90 +27,91 @@ RHYTHM_MAP = {
     1.5 * BEAT_VALUE * 4: 'quarter.',
     2.0 * BEAT_VALUE * 4: 'half',
     3.0 * BEAT_VALUE * 4: 'half.',
-    4.0 * BEAT_VALUE * 4: 'whole'
+    4.0 * BEAT_VALUE * 4: 'whole',
+    # Rest thresholds (slightly shorter than note durations)
+    0.4 * BEAT_VALUE * 4: 'rest.16th',
+    0.8 * BEAT_VALUE * 4: 'rest.eighth',
+    1.1 * BEAT_VALUE * 4: 'rest.quarter',
+    2.3 * BEAT_VALUE * 4: 'rest.half',
+    4.5 * BEAT_VALUE * 4: 'rest.whole'
 }
 
 # Global variables
 current_note = None
 note_start_time = None
+rest_start_time = None
 log_file = None
-stable_frames = 0
-last_detected_note = None
 
 def init_log_file():
     global log_file
-    os.makedirs("sax_notes", exist_ok=True)
+    os.makedirs("sax_rhythms", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = open(f"sax_notes/notes_{timestamp}.txt", "w")
+    log_file = open(f"sax_rhythms/rhythms_{timestamp}.txt", "w")
 
-def get_rhythm(duration):
-    closest = min(RHYTHM_MAP.keys(), key=lambda x: abs(x - duration))
-    return RHYTHM_MAP[closest]
-
-def freq_to_note_num(freq):
-    """Convert frequency to semitone position (0=C, 1=C#, etc.)"""
-    return int(round(12 * np.log2(max(1, freq) / 440.0) + 69) % 12
-
-def is_significant_change(new_note_num):
-    """Check if pitch change is large enough"""
-    if current_note is None:
-        return True
-    current_num = NOTE_NAMES.index(current_note)
-    return abs(new_note_num - current_num) >= NOTE_CHANGE_THRESHOLD
+def get_rhythm(duration, is_rest=False):
+    """Convert duration to nearest rhythm type"""
+    if is_rest:
+        # Only consider rest thresholds
+        rest_thresholds = {k:v for k,v in RHYTHM_MAP.items() if 'rest' in v}
+        closest = min(rest_thresholds.keys(), key=lambda x: abs(x - duration))
+        return rest_thresholds[closest]
+    else:
+        # Only consider note thresholds
+        note_thresholds = {k:v for k,v in RHYTHM_MAP.items() if 'rest' not in v}
+        closest = min(note_thresholds.keys(), key=lambda x: abs(x - duration)))
+        return note_thresholds[closest]
 
 def audio_callback(indata, frames, time_info, status):
-    global current_note, note_start_time, stable_frames, last_detected_note
+    global current_note, note_start_time, rest_start_time
     
     volume = np.sqrt(np.mean(indata**2))
+    current_time = time.time()
+    
+    # Detect silence (potential rest)
     if volume < VOLUME_THRESHOLD:
-        if current_note:
-            duration = time.time() - note_start_time
-            rhythm = get_rhythm(duration)
+        if current_note:  # Transition from note to rest
+            note_duration = current_time - note_start_time
+            rhythm = get_rhythm(note_duration)
             log_file.write(f"{rhythm} {current_note}\n")
             print(f"{rhythm} {current_note}")
             current_note = None
-        stable_frames = 0
+            rest_start_time = current_time
+        elif rest_start_time:  # Continuing rest
+            rest_duration = current_time - rest_start_time
+            # Will be logged when rest ends
         return
     
-    # Process audio
+    # Detect new note after rest
+    if rest_start_time and volume >= VOLUME_THRESHOLD:
+        rest_duration = current_time - rest_start_time
+        if rest_duration > 0.2 * BEAT_VALUE:  # Minimum rest duration
+            rhythm = get_rhythm(rest_duration, is_rest=True)
+            log_file.write(f"{rhythm}\n")
+            print(f"{rhythm}")
+        rest_start_time = None
+    
+    # Process new note
     fft_data = np.abs(rfft(indata[:, 0]))
     freqs = rfftfreq(len(indata[:, 0]), 1.0/SAMPLE_RATE)
+    valid_indices = np.where((freqs >= MIN_FREQ) & (freqs <= MAX_FREQ))[0]
     
-    # Focus on saxophone frequency range
-    valid_mask = (freqs >= MIN_FREQ) & (freqs <= MAX_FREQ)
-    if not np.any(valid_mask):
-        return
-    
-    peak_freq = freqs[valid_mask][np.argmax(fft_data[valid_mask])]
-    new_note_num = freq_to_note_num(peak_freq)
-    new_note = NOTE_NAMES[new_note_num]
-    
-    # Note stabilization logic
-    if new_note == last_detected_note:
-        stable_frames += 1
-    else:
-        stable_frames = 0
-        last_detected_note = new_note
-    
-    # Only change note if stable and significant difference
-    if (stable_frames >= STABLE_FRAMES_REQUIRED and 
-        is_significant_change(new_note_num)):
+    if len(valid_indices) > 0:
+        peak_freq = freqs[valid_indices[np.argmax(fft_data[valid_indices])]]
+        new_note = NOTE_NAMES[int(round(12 * np.log2(max(1, peak_freq) / 440.0) + 69) % 12]
         
-        if current_note:
-            duration = time.time() - note_start_time
-            rhythm = get_rhythm(duration)
-            log_file.write(f"{rhythm} {current_note}\n")
-            print(f"{rhythm} {current_note}")
-        
-        current_note = new_note
-        note_start_time = time.time()
-        stable_frames = 0
+        if new_note != current_note:
+            if current_note:  # Log previous note
+                note_duration = current_time - note_start_time
+                rhythm = get_rhythm(note_duration)
+                log_file.write(f"{rhythm} {current_note}\n")
+                print(f"{rhythm} {current_note}")
+            current_note = new_note
+            note_start_time = current_time
 
 def main():
     init_log_file()
-    print(f"Saxophone Note Detector\n"
-          f"Note change threshold: {NOTE_CHANGE_THRESHOLD} semitones\n"
-          f"Stability frames: {STABLE_FRAMES_REQUIRED}\n")
+    print(f"Saxophone Rhythm Logger (BPM: {BPM})\n"
+          "Playing notes will be saved with rests\n")
     
     try:
         with sd.InputStream(
