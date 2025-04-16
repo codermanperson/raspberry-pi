@@ -34,49 +34,6 @@ RHYTHM_MAP = {
     3.0 * BEAT_VALUE * 4: 'half.',
     4.0 * BEAT_VALUE * 4: 'whole'
 }
-VOLUME_THRESHOLD = 0.05                  # Silence detection level (0.01-0.1)
-MIN_REST_DURATION = 0.2 * (60/BPM)       # Shortest gap considered a rest (seconds)
-
-# Rest type thresholds (multipliers are relative to quarter note)
-REST_THRESHOLDS = {
-    0.4: 'rest.16th',    # 0.4x quarter note duration
-    0.8: 'rest.eighth',  # 0.8x
-    1.1: 'rest.quarter', # 1.1x 
-    2.3: 'rest.half',    # 2.3x
-    4.5: 'rest.whole'    # 4.5x
-}
-
-# Convert to absolute times based on BPM
-RHYTHM_MAP = {
-    # Notes (auto-generated)
-    **{0.125 * (60/BPM) * 4: '32nd'},
-    **{0.25 * (60/BPM) * 4: '16th'},
-    # ... other note values ...
-    
-    # Rests (calculated from thresholds)
-    **{thresh * (60/BPM): name for thresh, name in REST_THRESHOLDS.items()}
-}
-# ======================
-
-# [Rest of your existing code...]
-
-def audio_callback(indata, frames, time_info, status):
-    global current_note, note_start_time, rest_start_time
-    
-    volume = np.sqrt(np.mean(indata**2))
-    current_time = time.time()
-    
-    # Rest detection logic
-    if volume < VOLUME_THRESHOLD:
-        if current_note:  # Transition to rest
-            log_note_duration(current_time - note_start_time)
-            current_note = None
-            rest_start_time = current_time
-        elif rest_start_time and (current_time - rest_start_time) > MIN_REST_DURATION:
-            rest_duration = current_time - rest_start_time
-            log_file.write(f"{get_rest_type(rest_duration)}\n")
-        return
-    
 # Global variables
 current_note = None
 note_start_time = None
@@ -105,6 +62,19 @@ def is_significant_change(new_note_num):
     current_num = NOTE_NAMES.index(current_note)
     return abs(new_note_num - current_num) >= NOTE_CHANGE_THRESHOLD
 
+def audio_callback(indata, frames, time_info, status):
+    global current_note, note_start_time, stable_frames, last_detected_note
+    
+    volume = np.sqrt(np.mean(indata**2))
+    if volume < VOLUME_THRESHOLD:
+        if current_note:
+            duration = time.time() - note_start_time
+            rhythm = get_rhythm(duration)
+            log_file.write(f"{rhythm} {current_note}\n")
+            print(f"{rhythm} {current_note}")
+            current_note = None
+        stable_frames = 0
+        return
     
     # Process audio
     fft_data = np.abs(rfft(indata[:, 0]))
