@@ -9,31 +9,34 @@ from collections import deque
 # Constants
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 2048
-NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 VOLUME_THRESHOLD = 0.05
-MIN_FREQ = 100  # Bb2 (below sax range for overtones)
-MAX_FREQ = 1500 # F6 (above sax range)
+MIN_FREQ = 100    # Low Bb on sax (written)
+MAX_FREQ = 1500   # High F on sax (written)
+
+# Alto Saxophone transposition (Eb instrument)
+SAX_TRANSPOSE = -9  # Concert C → Sax A (9 semitones down)
+
+# Saxophone note names (written pitch)
+NOTE_NAMES = ['Bb', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A']
 
 # Note stabilization
-NOTE_CHANGE_THRESHOLD = 3  # Minimum semitone difference to change notes
-STABLE_FRAMES_REQUIRED = 3  # How many consistent frames before changing
+NOTE_CHANGE_THRESHOLD = 3  # Semitone difference to change notes
+STABLE_FRAMES_REQUIRED = 3  # Consistent frames before changing
 
-BPM = 120  # ← Add this line to control overall tempo
-BEAT_VALUE = 60.0 / BPM  # Duration of one beat in seconds
-
-# Then modify the RHYTHM_MAP to use BEAT_VALUE:
+# Rhythm detection
 RHYTHM_MAP = {
-    0.125 * BEAT_VALUE * 4: '32nd',
-    0.25 * BEAT_VALUE * 4: '16th',
-    0.375 * BEAT_VALUE * 4: '16th.',
-    0.5 * BEAT_VALUE * 4: 'eighth',
-    0.75 * BEAT_VALUE * 4: 'eighth.',
-    1.0 * BEAT_VALUE * 4: 'quarter',
-    1.5 * BEAT_VALUE * 4: 'quarter.',
-    2.0 * BEAT_VALUE * 4: 'half',
-    3.0 * BEAT_VALUE * 4: 'half.',
-    4.0 * BEAT_VALUE * 4: 'whole'
+    0.15: '32nd',
+    0.3: '16th',
+    0.45: '16th.',
+    0.6: 'eighth',
+    0.9: 'eighth.',
+    1.2: 'quarter',
+    1.8: 'quarter.',
+    2.4: 'half',
+    3.6: 'half.',
+    4.8: 'whole'
 }
+
 # Global variables
 current_note = None
 note_start_time = None
@@ -45,22 +48,33 @@ def init_log_file():
     global log_file
     os.makedirs("sax_notes", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = open(f"sax_notes/notes_{timestamp}.txt", "w")
+    log_file = open(f"sax_notes/sax_{timestamp}.txt", "w")
 
 def get_rhythm(duration):
     closest = min(RHYTHM_MAP.keys(), key=lambda x: abs(x - duration))
     return RHYTHM_MAP[closest]
 
-def freq_to_note_num(freq):
-    """Convert frequency to semitone position (0=C, 1=C#, etc.)"""
-    return int(round(12 * np.log2(max(1, freq) / 440.0) + 69) % 12
+def freq_to_sax_note(freq):
+    """Convert frequency to saxophone written pitch"""
+    if freq < MIN_FREQ or freq > MAX_FREQ:
+        return None
+    
+    # 1. Convert frequency to concert pitch MIDI number
+    concert_midi = 12 * np.log2(max(1, freq) / 440.0) + 69
+    
+    # 2. Transpose for alto sax (Eb instrument)
+    sax_midi = concert_midi + SAX_TRANSPOSE
+    
+    # 3. Convert to saxophone note name
+    return NOTE_NAMES[int(round(sax_midi)) % 12]
 
-def is_significant_change(new_note_num):
+def is_significant_change(new_note):
     """Check if pitch change is large enough"""
     if current_note is None:
         return True
-    current_num = NOTE_NAMES.index(current_note)
-    return abs(new_note_num - current_num) >= NOTE_CHANGE_THRESHOLD
+    current_idx = NOTE_NAMES.index(current_note)
+    new_idx = NOTE_NAMES.index(new_note)
+    return abs(new_idx - current_idx) >= NOTE_CHANGE_THRESHOLD
 
 def audio_callback(indata, frames, time_info, status):
     global current_note, note_start_time, stable_frames, last_detected_note
@@ -86,8 +100,7 @@ def audio_callback(indata, frames, time_info, status):
         return
     
     peak_freq = freqs[valid_mask][np.argmax(fft_data[valid_mask])]
-    new_note_num = freq_to_note_num(peak_freq)
-    new_note = NOTE_NAMES[new_note_num]
+    new_note = freq_to_sax_note(peak_freq)
     
     # Note stabilization logic
     if new_note == last_detected_note:
@@ -98,7 +111,8 @@ def audio_callback(indata, frames, time_info, status):
     
     # Only change note if stable and significant difference
     if (stable_frames >= STABLE_FRAMES_REQUIRED and 
-        is_significant_change(new_note_num)):
+        new_note and 
+        is_significant_change(new_note)):
         
         if current_note:
             duration = time.time() - note_start_time
@@ -112,7 +126,7 @@ def audio_callback(indata, frames, time_info, status):
 
 def main():
     init_log_file()
-    print(f"Saxophone Note Detector\n"
+    print(f"Alto Saxophone Note Detector\n"
           f"Note change threshold: {NOTE_CHANGE_THRESHOLD} semitones\n"
           f"Stability frames: {STABLE_FRAMES_REQUIRED}\n")
     
