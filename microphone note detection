@@ -6,21 +6,21 @@ from datetime import datetime
 import os
 from collections import deque
 
-# Constants
+# Constants for Eb Alto Saxophone
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 2048
 VOLUME_THRESHOLD = 0.05
-MIN_FREQ = 100    # Low Bb on sax (written)
-MAX_FREQ = 1500   # High F on sax (written)
+MIN_FREQ = 100    # Written low Bb (sounds as Db)
+MAX_FREQ = 1500   # Written high F (sounds as A)
 
-# Alto Saxophone transposition (Eb instrument)
-SAX_TRANSPOSE = -9  # Concert C → Sax A (9 semitones down)
+# Eb Alto Saxophone transposition (written to sounding)
+CONCERT_TO_SAX = 9  # Add 9 semitones to concert pitch to get written pitch
 
 # Saxophone note names (written pitch)
 NOTE_NAMES = ['Bb', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A']
 
 # Note stabilization
-NOTE_CHANGE_THRESHOLD = 3  # Semitone difference to change notes
+NOTE_CHANGE_THRESHOLD = 3  # Minimum semitone difference to change notes
 STABLE_FRAMES_REQUIRED = 3  # Consistent frames before changing
 
 # Rhythm detection
@@ -46,31 +46,31 @@ last_detected_note = None
 
 def init_log_file():
     global log_file
-    os.makedirs("sax_notes", exist_ok=True)
+    os.makedirs("alto_sax_notes", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = open(f"sax_notes/sax_{timestamp}.txt", "w")
+    log_file = open(f"alto_sax_notes/notes_{timestamp}.txt", "w")
 
 def get_rhythm(duration):
     closest = min(RHYTHM_MAP.keys(), key=lambda x: abs(x - duration))
     return RHYTHM_MAP[closest]
 
 def freq_to_sax_note(freq):
-    """Convert frequency to saxophone written pitch"""
+    """Convert frequency to saxophone written pitch (Eb alto)"""
     if freq < MIN_FREQ or freq > MAX_FREQ:
         return None
     
     # 1. Convert frequency to concert pitch MIDI number
     concert_midi = 12 * np.log2(max(1, freq) / 440.0) + 69
     
-    # 2. Transpose for alto sax (Eb instrument)
-    sax_midi = concert_midi + SAX_TRANSPOSE
+    # 2. Transpose for Eb alto sax (written pitch = concert pitch + 9 semitones)
+    sax_midi = concert_midi + CONCERT_TO_SAX
     
     # 3. Convert to saxophone note name
     return NOTE_NAMES[int(round(sax_midi)) % 12]
 
 def is_significant_change(new_note):
     """Check if pitch change is large enough"""
-    if current_note is None:
+    if current_note is None or new_note is None:
         return True
     current_idx = NOTE_NAMES.index(current_note)
     new_idx = NOTE_NAMES.index(new_note)
@@ -126,9 +126,9 @@ def audio_callback(indata, frames, time_info, status):
 
 def main():
     init_log_file()
-    print(f"Alto Saxophone Note Detector\n"
+    print(f"Eb Alto Saxophone Note Detector\n"
           f"Note change threshold: {NOTE_CHANGE_THRESHOLD} semitones\n"
-          f"Stability frames: {STABLE_FRAMES_REQUIRED}\n")
+          f"Detecting written pitch (sounds a major 6th lower)\n")
     
     try:
         with sd.InputStream(
